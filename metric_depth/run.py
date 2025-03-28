@@ -36,9 +36,20 @@ if __name__ == '__main__':
     }
     
     depth_anything = DepthAnythingV2(**{**model_configs[args.encoder], 'max_depth': args.max_depth})
-    depth_anything.load_state_dict(torch.load(args.load_from, map_location='cpu'))
-    depth_anything = depth_anything.to(DEVICE).eval()
+    # depth_anything.load_state_dict(torch.load(args.load_from, map_location='cpu'))
+    # depth_anything = depth_anything.to(DEVICE).eval()
     
+    try:
+        depth_anything.load_state_dict(torch.load(args.load_from, map_location='cpu'))
+    except:
+        state_dict = torch.load(args.load_from, map_location='cpu')
+        my_state_dict = {}
+        for key in state_dict['model'].keys():
+            my_state_dict[key.replace('module.', '')] = state_dict['model'][key]
+        depth_anything.load_state_dict(my_state_dict)
+
+    depth_anything = depth_anything.to(DEVICE).eval()
+
     if os.path.isfile(args.img_path):
         if args.img_path.endswith('txt'):
             with open(args.img_path, 'r') as f:
