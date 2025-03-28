@@ -17,6 +17,7 @@ from torch.utils.tensorboard import SummaryWriter
 from dataset.hypersim import Hypersim
 from dataset.kitti import KITTI
 from dataset.vkitti2 import VKITTI2
+from dataset.cem import CEM
 from depth_anything_v2.dpt import DepthAnythingV2
 from util.dist_helper import setup_distributed
 from util.loss import SiLogLoss
@@ -27,7 +28,7 @@ from util.utils import init_log
 parser = argparse.ArgumentParser(description='Depth Anything V2 for Metric Depth Estimation')
 
 parser.add_argument('--encoder', default='vitl', choices=['vits', 'vitb', 'vitl', 'vitg'])
-parser.add_argument('--dataset', default='hypersim', choices=['hypersim', 'vkitti'])
+parser.add_argument('--dataset', default='hypersim', choices=['hypersim', 'vkitti', 'cem'])
 parser.add_argument('--img-size', default=518, type=int)
 parser.add_argument('--min-depth', default=0.001, type=float)
 parser.add_argument('--max-depth', default=20, type=float)
@@ -38,6 +39,13 @@ parser.add_argument('--pretrained-from', type=str)
 parser.add_argument('--save-path', type=str, required=True)
 parser.add_argument('--local-rank', default=0, type=int)
 parser.add_argument('--port', default=None, type=int)
+
+def detect_nan(model):
+    for name, param in model.named_parameters():
+        if torch.isnan(param).any():
+            print(f"NaN detected in {name}")
+            return True
+    return False
 
 
 def main():
@@ -63,6 +71,8 @@ def main():
         trainset = Hypersim('dataset/splits/hypersim/train.txt', 'train', size=size)
     elif args.dataset == 'vkitti':
         trainset = VKITTI2('dataset/splits/vkitti2/train.txt', 'train', size=size)
+    elif args.dataset == 'cem':
+        trainset = CEM('dataset/splits/cem/train.txt', 'train', size=size)
     else:
         raise NotImplementedError
     trainsampler = torch.utils.data.distributed.DistributedSampler(trainset)
@@ -72,6 +82,8 @@ def main():
         valset = Hypersim('dataset/splits/hypersim/val.txt', 'val', size=size)
     elif args.dataset == 'vkitti':
         valset = KITTI('dataset/splits/kitti/val.txt', 'val', size=size)
+    elif args.dataset == 'cem':
+        valset = CEM('dataset/splits/cem/val.txt', 'val', size=size)
     else:
         raise NotImplementedError
     valsampler = torch.utils.data.distributed.DistributedSampler(valset)
@@ -103,14 +115,14 @@ def main():
     
     total_iters = args.epochs * len(trainloader)
     
-    previous_best = {'d1': 0, 'd2': 0, 'd3': 0, 'abs_rel': 100, 'sq_rel': 100, 'rmse': 100, 'rmse_log': 100, 'log10': 100, 'silog': 100}
+    previous_best = {'d1': 0, 'd2': 0, 'd3': 0, 'abs_rel': 100, 'abs_err': 20, 'sq_rel': 100, 'rmse': 100, 'rmse_log': 100, 'log10': 100, 'silog': 100}
     
     for epoch in range(args.epochs):
         if rank == 0:
             logger.info('===========> Epoch: {:}/{:}, d1: {:.3f}, d2: {:.3f}, d3: {:.3f}'.format(epoch, args.epochs, previous_best['d1'], previous_best['d2'], previous_best['d3']))
-            logger.info('===========> Epoch: {:}/{:}, abs_rel: {:.3f}, sq_rel: {:.3f}, rmse: {:.3f}, rmse_log: {:.3f}, '
+            logger.info('===========> Epoch: {:}/{:}, abs_rel: {:.3f}, abs_err: {:.3f}, sq_rel: {:.3f}, rmse: {:.3f}, rmse_log: {:.3f}, '
                         'log10: {:.3f}, silog: {:.3f}'.format(
-                            epoch, args.epochs, previous_best['abs_rel'], previous_best['sq_rel'], previous_best['rmse'], 
+                            epoch, args.epochs, previous_best['abs_rel'], previous_best['abs_err'], previous_best['sq_rel'], previous_best['rmse'], 
                             previous_best['rmse_log'], previous_best['log10'], previous_best['silog']))
         
         trainloader.sampler.set_epoch(epoch + 1)
@@ -122,13 +134,19 @@ def main():
             optimizer.zero_grad()
             
             img, depth, valid_mask = sample['image'].cuda(), sample['depth'].cuda(), sample['valid_mask'].cuda()
-            
+            # print(torch.isnan(img).any())
+            # print(torch.isnan(depth).any())
+            # print(torch.isnan(valid_mask).any())
+            # logger.info('depth_mean', torch.mean(depth))
+            # logger.info('depth shape', depth.shape)
+            # return
             if random.random() < 0.5:
                 img = img.flip(-1)
                 depth = depth.flip(-1)
                 valid_mask = valid_mask.flip(-1)
             
             pred = model(img)
+            # print('valid_mask', valid_mask)
             
             loss = criterion(pred, depth, (valid_mask == 1) & (depth >= args.min_depth) & (depth <= args.max_depth))
             
@@ -143,7 +161,11 @@ def main():
             
             optimizer.param_groups[0]["lr"] = lr
             optimizer.param_groups[1]["lr"] = lr * 10.0
-            
+
+            if detect_nan(model):
+                print(f"NaN detected at epoch {epoch}")
+                break
+                    
             if rank == 0:
                 writer.add_scalar('train/loss', loss.item(), iters)
             
@@ -153,7 +175,7 @@ def main():
         model.eval()
         
         results = {'d1': torch.tensor([0.0]).cuda(), 'd2': torch.tensor([0.0]).cuda(), 'd3': torch.tensor([0.0]).cuda(), 
-                   'abs_rel': torch.tensor([0.0]).cuda(), 'sq_rel': torch.tensor([0.0]).cuda(), 'rmse': torch.tensor([0.0]).cuda(), 
+                   'abs_rel': torch.tensor([0.0]).cuda(), 'abs_err': torch.tensor([0.0]).cuda(), 'sq_rel': torch.tensor([0.0]).cuda(), 'rmse': torch.tensor([0.0]).cuda(), 
                    'rmse_log': torch.tensor([0.0]).cuda(), 'log10': torch.tensor([0.0]).cuda(), 'silog': torch.tensor([0.0]).cuda()}
         nsamples = torch.tensor([0.0]).cuda()
         
