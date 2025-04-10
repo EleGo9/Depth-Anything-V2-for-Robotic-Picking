@@ -18,6 +18,7 @@ from dataset.hypersim import Hypersim
 from dataset.kitti import KITTI
 from dataset.vkitti2 import VKITTI2
 from dataset.cem import CEM
+from dataset.sygrid import SYGRID
 from depth_anything_v2.dpt import DepthAnythingV2
 from util.dist_helper import setup_distributed
 from util.loss import SiLogLoss
@@ -28,7 +29,7 @@ from util.utils import init_log
 parser = argparse.ArgumentParser(description='Depth Anything V2 for Metric Depth Estimation')
 
 parser.add_argument('--encoder', default='vitl', choices=['vits', 'vitb', 'vitl', 'vitg'])
-parser.add_argument('--dataset', default='hypersim', choices=['hypersim', 'vkitti', 'cem'])
+parser.add_argument('--dataset', default='hypersim', choices=['hypersim', 'vkitti', 'cem', 'sygrid'])
 parser.add_argument('--img-size', default=518, type=int)
 parser.add_argument('--min-depth', default=0.001, type=float)
 parser.add_argument('--max-depth', default=20, type=float)
@@ -72,7 +73,9 @@ def main():
     elif args.dataset == 'vkitti':
         trainset = VKITTI2('dataset/splits/vkitti2/train.txt', 'train', size=size)
     elif args.dataset == 'cem':
-        trainset = CEM('dataset/splits/cem/train.txt', 'train', size=size)
+        trainset = CEM('dataset/splits/cem/train.txt', 'train', max_depth=args.max_depth, gt_unit_measure='mm', size=size)
+    elif args.dataset == 'sygrid':
+        trainset = SYGRID('dataset/splits/sygrid/train.txt', 'train', max_depth=args.max_depth, gt_unit_measure='mm', size=size)
     else:
         raise NotImplementedError
     trainsampler = torch.utils.data.distributed.DistributedSampler(trainset)
@@ -84,6 +87,8 @@ def main():
         valset = KITTI('dataset/splits/kitti/val.txt', 'val', size=size)
     elif args.dataset == 'cem':
         valset = CEM('dataset/splits/cem/val.txt', 'val', size=size)
+    elif args.dataset == 'sygrid':
+        valset = SYGRID('dataset/splits/sygrid/val.txt', 'val', max_depth=args.max_depth, gt_unit_measure='mm', size=size)
     else:
         raise NotImplementedError
     valsampler = torch.utils.data.distributed.DistributedSampler(valset)
