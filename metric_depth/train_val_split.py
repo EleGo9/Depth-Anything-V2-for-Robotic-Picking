@@ -84,7 +84,7 @@ def create_train_val_split(dataset_path, output_dir, train_ratio=0.8):
 
 # Example usage
 if __name__ == "__main__":
-    dataset_path = "/path/to/dataset"  # Replace with your dataset path
-    output_dir = "metric_depth/dataset/splits/cem/"      # Replace with your output directory
+    dataset_path = "/media/goldberg/aa12ac5b-4cef-4bc9-b967-a3708b19eb4a/NIC_DS/sygrid_depth_dataset/depth_DS"  # Replace with your dataset path
+    output_dir = "metric_depth/dataset/splits/sygrid/"      # Replace with your output directory
     
     create_train_val_split(dataset_path, output_dir)
