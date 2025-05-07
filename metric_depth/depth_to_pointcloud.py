@@ -27,8 +27,10 @@ import open3d as o3d
 import os
 from PIL import Image
 import torch
+import time
 
 from depth_anything_v2.dpt import DepthAnythingV2
+DEBUG=True
 
 
 def main():
@@ -64,7 +66,15 @@ def main():
 
     # Initialize the DepthAnythingV2 model with the specified configuration
     depth_anything = DepthAnythingV2(**{**model_configs[args.encoder], 'max_depth': args.max_depth})
-    depth_anything.load_state_dict(torch.load(args.load_from, map_location='cpu'))
+
+    try:
+        depth_anything.load_state_dict(torch.load(args.load_from, map_location='cpu'))
+    except:
+        state_dict = torch.load(args.load_from, map_location='cpu')
+        my_state_dict = {}
+        for key in state_dict['model'].keys():
+            my_state_dict[key.replace('module.', '')] = state_dict['model'][key]
+        depth_anything.load_state_dict(my_state_dict)
     depth_anything = depth_anything.to(DEVICE).eval()
 
     # Get the list of image files to process
@@ -87,7 +97,7 @@ def main():
         # Load the image
         color_image = Image.open(filename).convert('RGB')
         width, height = color_image.size
-
+        start_time = time.time()
         # Read the image using OpenCV
         image = cv2.imread(filename)
         pred = depth_anything.infer_image(image, height)
@@ -104,9 +114,16 @@ def main():
         colors = np.array(color_image).reshape(-1, 3) / 255.0
 
         # Create the point cloud and save it to the output directory
+
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(points)
         pcd.colors = o3d.utility.Vector3dVector(colors)
+        end_time = time.time()
+        tot_time = end_time-start_time
+
+        if DEBUG:
+            print('Total time of inference + point cloud computation', tot_time)
+            o3d.visualization.draw_geometries([pcd])
         o3d.io.write_point_cloud(os.path.join(args.outdir, os.path.splitext(os.path.basename(filename))[0] + ".ply"), pcd)
 
 
