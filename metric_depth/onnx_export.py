@@ -36,7 +36,7 @@ def export_to_onnx(model, output_path, input_size, encoder, device):
         dummy_input,
         output_path,
         export_params=True,
-        opset_version=13,
+        opset_version=18,
         do_constant_folding=True,
         input_names=['input'],
         output_names=['depth'],
@@ -111,16 +111,16 @@ def main():
     # depth_anything.load_state_dict(torch.load(args.load_from, map_location='cpu'))
     # print(depth_anything)
     try:
-        depth_anything.load_state_dict(torch.load(args.load_from, map_location='cpu'))
+        depth_anything.load_state_dict(torch.load(args.load_from, map_location='cpu', weights_only=False))
     except:
-        state_dict = torch.load(args.load_from, map_location='cpu')
+        state_dict = torch.load(args.load_from, map_location='cpu', weights_only=False)
         my_state_dict = {}
         for key in state_dict['model'].keys():
             my_state_dict[key.replace('module.', '')] = state_dict['model'][key]
         depth_anything.load_state_dict(my_state_dict)
     depth_anything = depth_anything.to(DEVICE).eval()
     
-    output_path = args.load_from.replace('latest.pth', f'{args.input_size[0]}_{args.input_size[1]}_onnx_model.onnx')
+    output_path = args.load_from.replace('.pth', f'_{args.output_path}.onnx')
     # Export to ONNX
     export_to_onnx(
         model=depth_anything, 
