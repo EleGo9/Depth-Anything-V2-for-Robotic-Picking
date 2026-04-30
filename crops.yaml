@@ -1,0 +1,28 @@
+# Per-topic crop configuration for run_mcap_edges.py
+# Each entry: topic -> {crop_x, crop_y, crop_w, crop_h}
+# Topics listed here are also used as the default --topic list.
+
+topics:
+  /conti10/image:
+    crop_x: 82
+    crop_y: 300
+    crop_w: 1019
+    crop_h: 510
+
+  /conti11/image:
+    crop_x: 82
+    crop_y: 313
+    crop_w: 1019
+    crop_h: 346
+
+  /conti12/image:
+    crop_x: 82
+    crop_y: 210
+    crop_w: 1019
+    crop_h: 450
+
+  /conti13/image:
+    crop_x: 82
+    crop_y: 250
+    crop_w: 1019
+    crop_h: 450

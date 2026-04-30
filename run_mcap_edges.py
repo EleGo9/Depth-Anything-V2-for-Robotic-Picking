@@ -1,12 +1,12 @@
 """
 Read an MCAP file, compute edge maps from depth+normals for each image message,
-and write a new MCAP where the original RGB is replaced by the edge image on
-the same topic.  All non-image messages are copied verbatim.
+and write a new MCAP with the original images + edge maps on /topicX/edge topics.
 
-Usage:
+Usage (with per-topic config file):
+    python run_mcap_edges.py input.mcap output.mcap --config crops.yaml
+
+Usage (single topic, manual crop):
     python run_mcap_edges.py input.mcap output.mcap \\
-        --encoder vitl \\
-        --load-from checkpoints/depth_anything_v2_vitl.pth \\
         --topic /conti11/image \\
         --crop-x 82 --crop-y 313 --crop-w 1019 --crop-h 346
 """
@@ -19,6 +19,7 @@ import sys
 import cv2
 import numpy as np
 import torch
+import yaml
 from mcap.reader import make_reader
 from mcap.writer import CompressionType, Writer
 from mcap_protobuf.decoder import DecoderFactory
@@ -107,9 +108,13 @@ def main():
                         help="Checkpoint path (default: checkpoints/depth_anything_v2_<encoder>.pth)")
     parser.add_argument("--input-size", type=int, default=518)
 
-    parser.add_argument("--topic", nargs="+", default=["/conti11/image"],
-                        help="One or more image topics to replace with edge maps")
+    parser.add_argument("--config", default=None,
+                        help="YAML config file with per-topic crop settings (e.g. crops.yaml). "
+                             "Topics are taken from the config; --topic and --crop-* are ignored.")
 
+    parser.add_argument("--topic", nargs="+", default=None,
+                        help="One or more image topics (space- or comma-separated). "
+                             "Ignored when --config is provided.")
     parser.add_argument("--crop-x", type=int, default=82)
     parser.add_argument("--crop-y", type=int, default=313)
     parser.add_argument("--crop-w", type=int, default=1019)
@@ -122,6 +127,26 @@ def main():
     parser.add_argument("--max-frames", type=int, default=None,
                         help="Stop after this many inferred frames (per topic)")
     args = parser.parse_args()
+
+    # ── Load config or fall back to CLI args ───────────────────────────────
+    if args.config:
+        with open(args.config) as f:
+            cfg = yaml.safe_load(f)
+        topic_crops: dict[str, dict] = cfg["topics"]
+        print(f"Config loaded from {args.config}  ({len(topic_crops)} topics)")
+    else:
+        if args.topic is None:
+            parser.error("Provide --config <file> or at least one --topic.")
+        topics = [t for raw in args.topic for t in raw.split(",") if t]
+        topic_crops = {
+            t: {"crop_x": args.crop_x, "crop_y": args.crop_y,
+                "crop_w": args.crop_w, "crop_h": args.crop_h}
+            for t in topics
+        }
+
+    for topic, crop in topic_crops.items():
+        print(f"  {topic}: x={crop['crop_x']} y={crop['crop_y']} "
+              f"w={crop['crop_w']} h={crop['crop_h']}")
 
     # ── Model ─────────────────────────────────────────────────────────────
     DEVICE = ("cuda" if torch.cuda.is_available()
@@ -145,6 +170,7 @@ def main():
         model.load_state_dict(clean)
     model = model.to(DEVICE).eval()
     print(f"Model loaded on {DEVICE}  ({ckpt})")
+    print(f"Number of max frames: {args.max_frames}")
 
     # ── MCAP pass ─────────────────────────────────────────────────────────
     with open(args.input, "rb") as f_in, open(args.output, "wb") as f_out:
@@ -163,6 +189,13 @@ def main():
         summary    = reader.get_summary()
         total_msgs = (summary.statistics.message_count
                       if summary and summary.statistics else None)
+
+        if summary and summary.channels:
+            print("Topics in MCAP:")
+            for ch in summary.channels.values():
+                marker = "✓" if ch.topic in topic_crops else " "
+                print(f"  [{marker}] {ch.topic}")
+            print()
 
         schema_map:      dict[int, int] = {}
         channel_map:     dict[int, int] = {}
@@ -187,7 +220,7 @@ def main():
 
             # ── Register channel once ─────────────────────────────────────
             is_target = (schema.name == "proto.tk.msg.Image"
-                         and channel.topic in args.topic)
+                         and channel.topic in topic_crops)
 
             if not is_target:
                 continue
@@ -233,9 +266,10 @@ def main():
 
             infer_count[topic] += 1
             img_bgr    = decode_image(channel, proto_msg)
+            crop       = topic_crops[topic]
             edges_gray = compute_edges_full(
                 model, img_bgr, args.input_size,
-                args.crop_x, args.crop_y, args.crop_w, args.crop_h,
+                crop["crop_x"], crop["crop_y"], crop["crop_w"], crop["crop_h"],
             )
 
             if args.colormap:
@@ -268,7 +302,19 @@ def main():
                 data=edge_proto.SerializeToString(),
             )
 
+            # Stop early only after the edge has been written
+            if args.max_frames is not None:
+                if all(infer_count.get(t, 0) >= args.max_frames for t in topic_crops):
+                    progress.close()
+                    break
+
         writer.finish()
+
+        if not channel_map:
+            print("\n[WARNING] Nessun messaggio scritto. I topic specificati con --topic "
+                  "non corrispondono a nessun topic nell'MCAP. "
+                  "Controlla l'elenco sopra e rilancia con --topic corretto.")
+            return
 
     print(f"\nDone. Written to: {args.output}")
     verify_mcap(args.output)
@@ -277,7 +323,7 @@ def main():
 def verify_mcap(path: str):
     print(f"\n── Verifying {path} ──")
     with open(path, "rb") as f:
-        reader = make_reader(f, decoder_factories=[DecoderFactory()])
+        reader  = make_reader(f)
         header  = reader.get_header()
         summary = reader.get_summary()
         print(f"  profile : {header.profile if header else 'n/a'}")
@@ -285,9 +331,12 @@ def verify_mcap(path: str):
         if summary and summary.statistics:
             s = summary.statistics
             print(f"  messages: {s.message_count}")
+            if s.message_count == 0:
+                print("  [WARNING] 0 messages — check your --topic / --config")
+                return
             print(f"  channels: {len(summary.channels)}")
         msg_counts: dict[str, int] = {}
-        for _, channel, _, _ in reader.iter_decoded_messages():
+        for _, channel, _ in reader.iter_messages():
             msg_counts[channel.topic] = msg_counts.get(channel.topic, 0) + 1
         print("  topics:")
         for topic, count in sorted(msg_counts.items()):
